@@ -1,0 +1,469 @@
+---
+title: "Initial_analysis"
+format: html
+editor: visual
+---
+
+## 
+
+## Bring in data
+
+First, bring in data
+
+```{r}
+pacman::p_load(tidyverse,vroom,TwoSampleMR,data.table)
+f <- list.files("/Volumes/infection_gwas/tabix_indexed/") %>%
+  str_subset("tbi", negate = T)
+d <- vroom("data/phenotype_pearson_df.tsv")
+```
+
+Examine phenotypes and kill rare ones:
+
+```{r}
+all_gwas <- import_tabix_by_SNP("rs2228145",
+                                f)
+
+all_gwas %>%
+  ggplot(aes(x = cases_n)) +
+  geom_histogram() +
+  scale_x_log10() +
+  theme_bw()
+
+
+
+ggcorrplot::ggcorrplot(d, hc.order = T, tl.cex = 5)
+ggsave("MR/output/all_gwas.tiff", height = 15, width = 17, compression = "lzw", bg = "white")
+
+```
+
+```{r}
+common_gwas <- all_gwas %>%
+  filter(cases_n > 2000) %>%
+  pull(id)
+
+colnames(d)
+limited <- d%>%
+  mutate(name = colnames(d)) %>%
+  filter(name %in% common_gwas) 
+
+limited <- limited[names(limited) %in% common_gwas]
+
+ggcorrplot::ggcorrplot(limited, hc.order = T, tl.cex = 5)
+ggsave("MR/output/n_2000_gwas.tiff", height = 10, width = 12, compression = "lzw", bg = "white")
+```
+
+```{r}
+
+d_mat <- 1-abs(d)
+d_mat = as.dist(d_mat)
+nj=hclust(d_mat, method = "complete")
+plot(nj, hang = -1, cex = 0.05)
+k <- cutree(nj, h = 0.25)
+only_1000_cluster <- tibble(id = names(k), cluster = k) %>%
+  left_join(all_gwas) %>%
+  select(id, cluster, cases_n) %>%
+  group_by(cluster) %>%
+  arrange(cluster,-cases_n) %>%
+  filter(cases_n >1000) %>%
+  slice(1)
+
+only_1000_cluster %>%
+  ungroup() %>%
+  gt::gt()
+
+k <- cutree(nj, h = 0.1)
+only_5000_cluster <- tibble(id = names(k), cluster = k) %>%
+  left_join(all_gwas) %>%
+  select(id, cluster, cases_n) %>%
+  group_by(cluster) %>%
+  arrange(cluster,-cases_n) %>%
+  filter(cases_n >5000) %>%
+  slice(1)
+
+only_5000_cluster %>%
+  ungroup() %>%
+  gt::gt()
+
+```
+
+rg
+
+```{r}
+
+rg <- vroom("/Volumes/infection_gwas/results/hdl_results_all.tsv.gz")
+rg %>%
+  pivot_wider(names_from = estimate_type, values_from = c(Estimate, se))
+
+rg_wide <- rg %>%
+  dplyr::group_by(GWAS_1, GWAS_2, estimate_type) %>%
+  mutate(type = row_number()) %>%
+  mutate(type = if_else(type == 1, "hapmap2", "hapmap3")) %>%
+  ungroup() %>%
+    pivot_wider(names_from = estimate_type, values_from = c(Estimate, se))
+
+main <- rg_wide %>%
+  filter(Estimate_H2_g1 >0.005, Estimate_H2_g2 > 0.005) %>%
+  filter(type == "hapmap2")
+
+included_gwas = unique(c(main$GWAS_1, main$GWAS_2))
+
+rg_wide %>%
+  arrange(-Estimate_H2_g1) %>%
+  select(GWAS_1, Estimate_H2_g1, se_H2_g1) %>%
+  group_by(GWAS_1) %>%
+  slice(1) %>%
+  ungroup() %>%
+  arrange(-Estimate_H2_g1) %>%
+  head(15) %>%
+  gt::gt()
+
+col1 <- main %>%
+  select(col1 = GWAS_1, col2 = GWAS_2, Estimate_rg) 
+
+perfect_cors <- tibble(
+  col1 = included_gwas,
+  col2 = included_gwas,
+  Estimate_rg = 1
+)
+
+cor_matrix <- main %>%
+  select(col1 = GWAS_2, col2 = GWAS_1, Estimate_rg) %>%
+  bind_rows(col1) %>%
+  bind_rows(perfect_cors) %>%
+  filter(!str_detect(col1, "106")) %>%
+    filter(!str_detect(col2, "106")) %>%
+  pivot_wider(names_from = col2, values_from = Estimate_rg) %>%
+  arrange(col1) %>%
+  select(-col1)
+
+
+ggcorrplot::ggcorrplot(cor_matrix, tl.cex = 7, method = "circle", type = "upper")
+```
+
+```{r}
+limited <- d%>%
+  mutate(name = colnames(d)) %>%
+  filter(name %in% only_1000_cluster$id) 
+
+limited <- limited[names(limited) %in% only_1000_cluster$id]
+ggcorrplot::ggcorrplot(limited, hc.order = T, tl.cex = 5)
+
+str_detect(f, limi)
+```
+
+```{r}
+snp_list <- read_tsv("data/snp_chrom_pos.tsv.gz")
+only_limited <- f %>%
+  str_subset(paste(paste0(only_5000_cluster$id,".tsv"), collapse = "|"))
+
+bmi_e <- fread("https://portals.broadinstitute.org/collaboration/giant/images/1/15/SNP_gwas_mc_merge_nogc.tbl.uniq.gz") 
+
+bmi_exposure <- bmi_e %>%
+  rename(pval.exposure = p) %>%
+  filter(pval.exposure < 5e-8) %>%
+  as_tibble() %>%
+  mutate(effect_allele.exposure = A1,
+         other_allele.exposure = A2,
+         eaf.exposure = Freq1.Hapmap,
+         beta.exposure = b,
+         se.exposure = se,
+         pval.exposure,
+         exposure = "BMI") %>%
+  clump_data()
+
+
+
+bmi_outcomes <- import_tabix_by_SNP(SNPs = bmi_exposure$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+
+dat <- harmonise_data(bmi_exposure, bmi_outcomes)
+
+
+
+res_bmi <- mr(dat, method = "mr_ivw")
+res_bmi %>% as_tibble() %>%
+  arrange(b) %>%
+  ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("Odds ratio (95% CI) per SD BMI")
+
+res_bmi %>%
+  arrange(pval)
+```
+
+IL-6 signalling
+
+```{r}
+
+snps <- read_tsv("https://github.com/gushamilton/il6-sepsis/raw/main/data/harmonised_data_final.tsv") %>%
+  select(contains("exposure"), SNP) %>%
+  filter(exposure == "cisIL6R") %>%
+  distinct()
+
+outcomes <- import_tabix_by_SNP(SNPs = snps$SNP,
+                    name = f[1:126],
+                    type = "outcome")
+
+il6_dat <- harmonise_data(snps, outcomes)
+res_il6r <- mr(il6_dat, method ="mr_ivw")
+
+res_il6r %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  as_tibble() %>%
+  arrange(b) %>%
+  ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("Odds ratio (95% CI) per DECREASED IL-6 activity / lnCRP")
+
+res_il6r %>%
+  as_tibble() %>%
+  arrange(pval) %>%
+  head(15) %>%
+  arrange(b) %>%
+  ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("Odds ratio (95% CI) per DECREASED IL-6 activity / lnCRP")
+ 
+```
+
+```{r}
+crp_start <- 159682079 -3e5
+crp_end <- 159684379 + 3e5
+crp  <- data.table::fread("~/data/CRP/gwas/GCST90029070_buildGRCh37.tsv.gz") 
+
+crp_clumped <- crp %>%
+  filter(chromosome == 1 & (base_pair_location > crp_start) & (base_pair_location < crp_end)) %>%
+  select(SNP = variant_id, effect_allele.exposure = effect_allele, other_allele.exposure = other_allele, beta.exposure = beta, se.exposure = standard_error, pval.exposure = p_value) %>%
+  as_tibble() %>%
+  mutate(eaf.exposure = NA) %>%
+  mutate(exposure ="CRP", id.exposure = "CRP") %>%
+  mutate(pval.exposure = as.numeric(pval.exposure)) %>%
+  filter(pval.exposure < 5e-8)  %>%
+  clump_data(clump_r2 = 0.01)
+
+
+crp_outcomes <- outcomes <- import_tabix_by_SNP(SNPs = crp_clumped$SNP,
+                    name = f[1:126],
+                    type = "outcome")
+
+crp_dat <- harmonise_data(crp_clumped, crp_outcomes)
+crp_res <- mr(crp_dat, method = "mr_ivw")
+crp_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(-b) %>%
+   ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T)
+
+```
+
+Iron
+
+```{r}
+tsat <- readxl::read_excel("data/iron_snps.xlsx", sheet = 1)
+tsat_outcomes <- outcomes <- import_tabix_by_SNP(SNPs = tsat$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+tsat <- tsat %>%
+  mutate(exposure = "tsat", id.exposure = "tsat")
+tsat_dat <- harmonise_data(tsat, tsat_outcomes)
+tsat_res <- mr(tsat_dat, method = "mr_ivw")
+tsat_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(-b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR (95% CI) per increase in TSAT")
+
+
+
+iron <- readxl::read_excel("data/iron_snps.xlsx", sheet = "Iron")
+iron_outcomes <- outcomes <- import_tabix_by_SNP(SNPs = iron$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+iron <- iron %>%
+  mutate(exposure = "iron", id.exposure = "iron")
+iron_dat <- harmonise_data(iron, iron_outcomes)
+iron_res <- mr(iron_dat, method = "mr_ivw")
+iron_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(-b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR (95% CI) per increase in iron")
+
+
+
+
+  
+```
+
+diabetes
+
+```{r}
+
+diabetes <- extract_instruments("ebi-a-GCST006867")
+
+diabetes_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =diabetes$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+diabetes_dat <- harmonise_data(diabetes, diabetes_outcomes)
+diabetes_res <- mr(diabetes_dat, method = "mr_ivw")
+diabetes_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(-b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR 95% CI for diabetes")
+
+```
+
+```{r}
+
+
+hdl <- extract_instruments("ieu-b-109")
+
+hdl_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =hdl$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+hdl_dat <- harmonise_data(hdl, hdl_outcomes)
+hdl_res <- mr(hdl_dat, method = "mr_ivw")
+hdl_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR (95% CI) for increasing HDL")
+
+```
+
+```{r}
+hdl_p <- read_tsv("/Users/fh6520/R/hdl-sepsis/for_upload/analysis_1_harmonised.tsv") %>%
+  select(contains("exposure"), SNP) %>%
+  distinct()
+
+hdl_p_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =hdl_p$SNP,
+                    name = f[1:126],
+                    type = "outcome")
+
+hdl_p_dat <- harmonise_data(hdl_p, hdl_p_outcomes)
+hdl_p_res <- mr(hdl_p_dat, method = "mr_ivw")
+hdl_p_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T,
+                           colour = exposure)
+
+```
+
+```{r}
+
+ldl <- extract_instruments("ieu-b-110")
+
+only_limited <- f %>%
+  str_subset(paste(paste0(only_5000_cluster$id,".tsv"), collapse = "|"))
+
+ldl_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =ldl$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+ldl_dat <- harmonise_data(ldl, ldl_outcomes)
+ldl_res <- mr(ldl_dat, method = "mr_ivw")
+ldl_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR 95% CI per Sd change in LDL-C")
+
+
+```
+
+```{r}
+smoking <- extract_instruments("ieu-b-4877")
+
+
+
+smoking_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =smoking$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+smoking_dat <- harmonise_data(smoking, smoking_outcomes)
+smoking_res <- mr(smoking_dat, method = "mr_ivw")
+smoking_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T) +
+  xlab("OR (95% CI) for smoking")
+
+```
+
+```{r}
+fer <- import_tabix_by_SNP("rs4957796",
+                    name = f,
+                    type = "outcome")
+
+fer %>%
+  view()
+```
+
+smoking
+
+```{r}
+egfr <- extract_instruments("ieu-a-1104")
+
+only_limited <- f %>%
+  str_subset(paste(paste0(only_5000_cluster$id,".tsv"), collapse = "|"))
+
+egfr_outcomes <- outcomes <- import_tabix_by_SNP(SNPs =egfr$SNP,
+                    name = only_limited,
+                    type = "outcome")
+
+egfr_dat <- harmonise_data(egfr, egfr_outcomes)
+egfr_res <- mr(egfr_dat, method = "mr_ivw")
+egfr_res %>%
+  as_tibble() %>%
+  filter(id.outcome %in% only_5000_cluster$id) %>%
+  arrange(b) %>%
+     ggforestplot::forestplot(name = outcome,
+                           estimate = b,
+                           se = se,
+                           logodds = T)
+```

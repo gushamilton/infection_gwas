@@ -2,7 +2,7 @@ library(MungeSumstats)
 library(tidyverse)
 # Need to have the GRCh38 SNPs also
 # BiocManager::install("SNPlocs.Hsapiens.dbSNP155.GRCh38")
-gc()
+
 master_function <- function(path) {
   name <- basename(path)
   d <- data.table::fread(path) %>%

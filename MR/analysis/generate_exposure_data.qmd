@@ -1,0 +1,278 @@
+---
+title: "Generate exposure data"
+format: html
+editor: visual
+---
+
+## Bring in GWAS
+
+First, download all GWAS to the local folder (input_gwas). Now load packages.
+
+```{r}
+pacman::p_load(tidyverse, data.table, vroom, TwoSampleMR, MungeSumstats, janitor, snpr)
+
+lookup <- c(SNP = "SNP", effect_allele.exposure = "A1", other_allele.exposure = "A2", beta.exposure = "BETA", se.exposure = "SE", pval.exposure = "P", exposure = "RISK_FACTOR", eaf.exposure = "AAF", eaf.exposure = "FRQ")
+```
+
+What files are in here?
+
+```{r}
+input_gwas <- list.files("/Users/fh6520/data/infection_gwas/input_gwas/")
+input_gwas
+```
+
+Also, bring in the topmed alleles:
+
+```{r}
+alleles <- vroom("data/snp_loc_alleles.tsv.gz")
+```
+
+First, lets load the GWAS we only have via Larrson et al (as not publically available).
+
+These are:
+
+1.  Serum Folate
+2.  Serum homocysteine
+3.  Coffee consumption
+
+First we just need to sort the columns out. Also only include effect allele, which is rather annoying.
+
+We use the MungeSumStats package to standardise, and check the alleles.
+
+First, coffee
+
+```{r}
+larrson_gwas <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/Larrson_unadjusted.tsv", skip = 1) %>% clean_names()
+  
+larrson_gwas_tidied <- larrson_gwas %>%
+   mutate(se = str_replace(se, "\\s", "|")) %>% 
+  mutate(se_p_value = str_replace(se_p_value, "\\s", "|")) %>% 
+  separate(se, into = c("beta", "se"), sep = "\\|") %>%
+  separate(se_p_value, into = c("se_backup", "other"), sep = "\\|") %>%
+  mutate(se = if_else(is.na(se), se_backup, se)) %>%
+  select(risk_factor, SNP = snp, chr, effect_allele = ea, beta, se) %>%
+  mutate(across(c(beta, se), as.numeric)) %>%
+  mutate(P =pnorm(beta/se, lower.tail=FALSE)) %>%
+   select(-chr) %>%
+  left_join(alleles) 
+ 
+larrson_gwas %>%
+  filter(risk_factor == "Serum folate")
+
+
+  
+coffee <- larrson_gwas_tidied %>%
+  filter(risk_factor == "Coffee")
+
+
+coffee_munged <- coffee %>%
+  filter(effect_allele == Ref | effect_allele == Alt) %>%
+  mutate(other_allele.exposure = if_else(effect_allele == Alt, Ref, Alt)) %>%
+  mutate(eaf.exposure = if_else(effect_allele == Alt, AAF, 1-AAF)) %>%
+  transmute(
+    exposure= risk_factor, SNP, effect_allele.exposure = effect_allele, beta.exposure = beta,se.exposure = se,
+    eaf.exposure, other_allele.exposure, pval.exposure = P
+  ) 
+
+
+rename(coffee_munged, any_of(lookup)) %>%
+  write_tsv("/Users/fh6520/data/infection_gwas/munged/coffee_exposure.tsv")
+```
+
+Now, folate - nothing in the se! so ignore for now.
+
+```{r}
+folate<- larrson_gwas_tidied %>%
+  filter(risk_factor == "Serum folate")
+
+larrson_gwas_tidied %>%
+  count(risk_factor) %>%
+  head(20)
+
+
+folate_munged <- folate %>%
+  filter(effect_allele == Ref | effect_allele == Alt) %>%
+  mutate(other_allele = if_else(effect_allele == Alt, Ref, Alt)) %>%
+  mutate(AAF = if_else(effect_allele == Alt, AAF, 1-AAF)) %>%
+  MungeSumstats::standardise_header(return_list = F) 
+
+folate_munged
+
+```
+
+Homocysteine
+
+```{r}
+
+homocystein <- larrson_gwas_tidied %>%
+  filter(risk_factor == "Homocysteine")
+
+homocystein %>%
+  filter(effect_allele == Ref | effect_allele == Alt) %>%
+  mutate(other_allele.exposure = if_else(effect_allele == Alt, Ref, Alt)) %>%
+  mutate(eaf.exposure = if_else(effect_allele == Alt, AAF, 1-AAF)) %>%
+  transmute(
+    exposure= risk_factor, SNP, effect_allele.exposure = effect_allele, beta.exposure = beta,se.exposure = se,
+    eaf.exposure, other_allele.exposure, pval.exposure = P
+  ) %>%
+  write_tsv("/Users/fh6520/data/infection_gwas/munged/coffee_exposure.tsv")
+  
+
+```
+
+Now for the other GWAS. Let's do them in order.
+
+1.  Educational attainment\
+
+```{r}
+edu <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/EA4_additive_excl_23andMe.txt.gz")
+edu_clumped <- edu %>%
+  filter(P < 5e-8) %>%
+  rename(any_of(lookup)) %>%
+  transmute(SNP = rsID, effect_allele.exposure = Effect_allele, other_allele.exposure = Other_allele, eaf.exposure = EAF_HRC, beta.exposure = Beta, se.exposure, pval.exposure) %>%
+  clump_data()
+
+edu_clumped %>%
+  mutate(exposure = "EA") %>%
+    write_tsv("/Users/fh6520/data/infection_gwas/munged/EA_exposure.tsv")
+```
+
+2.  Years schooling
+
+```{r}
+
+years <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/EduYears_Main.txt.gz")
+
+years_clumped <- years%>%
+  filter(Pval < 5e-8) %>%
+  standardise_header(return_list = F) %>%
+  select(any_of(lookup)) %>%
+  clump_data()
+
+years_clumped
+years_clumped %>%
+  mutate(exposure = "EA_years") %>%
+    write_tsv("/Users/fh6520/data/infection_gwas/munged/EA_years_exposure.tsv")
+
+```
+
+3.  intellegence
+
+```{r}
+int<- vroom("/Users/fh6520/data/infection_gwas/input_gwas/SavageJansen_2018_intelligence_metaanalysis.txt.gz")
+
+int_clumped <- int%>%
+  filter(P < 5e-8) %>%
+  standardise_header(return_list = F) %>%
+  select(any_of(lookup)) %>%
+  clump_data()
+
+int_clumped
+int_clumped %>%
+  mutate(exposure = "intellegence") %>%
+    write_tsv("/Users/fh6520/data/infection_gwas/munged/intellegence_exposure.tsv")
+```
+
+4.  Smoking initiation
+
+(do all four via a function)
+
+```{r}
+
+pull_smoking <- function(file, name) {
+smoking_int <- vroom(file) 
+
+smoking_munged <- smoking_int %>%
+  transmute(SNP = RSID, effect_allele.exposure = EFFECT_ALLELE, other_allele.exposure = OTHER_ALLELE,
+            pval.exposure = P, se.exposure = SE, beta.exposure = BETA, eaf.exposure = AF_1000G) %>%
+  filter(pval.exposure  <5e-8) %>%
+  clump_data() %>%
+  mutate(exposure = name) 
+
+write_tsv(smoking_munged, paste0("/Users/fh6520/data/infection_gwas/munged/",name, ".tsv"))
+
+}
+
+pull_smoking("/Users/fh6520/data/infection_gwas/input_gwas/GSCAN_AgeSmk_2022_GWAS_SUMMARY_STATS_EUR.txt.gz", "age_smoked_exposure")
+pull_smoking("/Users/fh6520/data/infection_gwas/input_gwas/GSCAN_CigDay_2022_GWAS_SUMMARY_STATS_EUR.txt.gz", "cig_day_exposure")
+pull_smoking("/Users/fh6520/data/infection_gwas/input_gwas/GSCAN_DrnkWk_2022_GWAS_SUMMARY_STATS_EUR.txt.gz", "drink_week_exposure")
+pull_smoking("/Users/fh6520/data/infection_gwas/input_gwas/GSCAN_SmkInit_2022_GWAS_SUMMARY_STATS_EUR.txt.gz", "smoking_initiation_exposure")
+```
+
+5.  Vitamin D
+
+```{r}
+vitd<- vroom("/Users/fh6520/data/infection_gwas/input_gwas/vitamin_d_jiang_2018.tsv.gz")
+
+vitd_munged <- vitd %>%
+  select(SNP = HM_RSID,
+         effect_allele = HM_EFFECT_ALLELE,
+         other_allele.exposure = HM_OTHER_ALLELE,
+         eaf.exposure = FRQ,
+         beta.exposure = HM_BETA,
+         se.exposure = SE,
+         pval.exposure = P) %>%
+  mutate(exposure = "VitD") %>%
+  filter(pval.exposure <5e-8) %>%
+  clump_data()
+
+
+vitd_munged %>%
+    write_tsv("/Users/fh6520/data/infection_gwas/munged/vitd_exposure.tsv")
+```
+
+6.  BMI
+
+```{r}
+bmi <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/bmi.giant-ukbb.meta-analysis.combined.23May2018.txt.gz?download=1")
+
+bmi_munged <- bmi %>%
+  filter(P <5e-8) %>%
+  transmute(SNP = sub(":.*", "", SNP),
+            effect_allele.exposure = Tested_Allele, other_allele.exposure = Other_Allele,
+            eaf.exposure = Freq_Tested_Allele, beta.exposure = BETA,
+            se.exposure = SE,
+            pval.exposure = P) %>%
+  clump_data()
+
+bmi_munged %>%
+  mutate(exposure = "BMI") %>%
+  write_tsv("/Users/fh6520/data/infection_gwas/munged/bmi_exposure.tsv")
+```
+
+6.  WHR
+
+```{r}
+whr <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/whr.giant-ukbb.meta-analysis.combined.23May2018.txt.gz?download=1")
+
+whr_munged <- whr %>%
+  filter(P <5e-8) %>%
+  transmute(SNP = sub(":.*", "", SNP),
+            effect_allele.exposure = Tested_Allele, other_allele.exposure = Other_Allele,
+            eaf.exposure = Freq_Tested_Allele, beta.exposure = BETA,
+            se.exposure = SE,
+            pval.exposure = P) %>%
+  clump_data()
+
+whr_munged %>%
+  mutate(exposure = "BMI") %>%
+  write_tsv("/Users/fh6520/data/infection_gwas/munged/whr_exposure.tsv")
+```
+
+7. T2DM
+
+```{r}
+
+diabetes <- vroom("/Users/fh6520/data/infection_gwas/input_gwas/diabetes.txt.gz")
+colnames(diabetes)
+diabetes_clumped <- diabetes %>%
+  select(SNP = rsID,
+         effect_allele.exposure = effect_allele, other_allele.exposure = other_allele,beta.exposure = `Fixed-effects_beta`, se.exposure = `Fixed-effects_SE`, pval.exposure = `Fixed-effects_p-value`) %>%
+  filter(pval.exposure <5e-8) %>%
+  clump_data()
+
+diabetes_clumped %>%
+  mutate(exposure = "diabtes") %>%
+  write_tsv("/Users/fh6520/data/infection_gwas/munged/diabetes_exposure.tsv")
+         
+```
